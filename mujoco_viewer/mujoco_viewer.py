@@ -268,7 +268,7 @@ class MujocoViewer(Callbacks):
         mujoco.mjv_applyPerturbPose(self.model, self.data, self.pert, 0)
         mujoco.mjv_applyPerturbForce(self.model, self.data, self.pert)
 
-    def read_pixels(self, camid=None, depth=False):
+    def read_pixels(self, camid=None, depth=False, segmentation=False):
         if self.render_mode == 'window':
             raise NotImplementedError(
                 "Use 'render()' in 'window' mode.")
@@ -282,6 +282,13 @@ class MujocoViewer(Callbacks):
 
         self.viewport.width, self.viewport.height = glfw.get_framebuffer_size(
             self.window)
+        # add by v-wewei for segmentation result return
+        if segmentation:
+            self.scn.flags[mujoco.mjtRndFlag.mjRND_SEGMENT] = True
+            self.scn.flags[mujoco.mjtRndFlag.mjRND_IDCOLOR] = True
+        else:
+            self.scn.flags[mujoco.mjtRndFlag.mjRND_SEGMENT] = False
+            self.scn.flags[mujoco.mjtRndFlag.mjRND_IDCOLOR] = False
         # update scene
         mujoco.mjv_updateScene(
             self.model,
@@ -295,16 +302,52 @@ class MujocoViewer(Callbacks):
         mujoco.mjr_render(self.viewport, self.scn, self.ctx)
         shape = glfw.get_framebuffer_size(self.window)
         
-        
+        if segmentation:
+            rgb_img = np.zeros((shape[1], shape[0], 3), dtype=np.uint8)
+            mujoco.mjr_readPixels(rgb_img, None, self.viewport, self.ctx)
+            image3 = rgb_img.astype(np.uint32)
+            segimage = (
+                    image3[:, :, 0]
+                    + image3[:, :, 1] * (2 ** 8)
+                    + image3[:, :, 2] * (2 ** 16)
+            )
+
+            # Remap segid to 2-channel (object ID, object type) pair.
+            # Seg ID 0 is background -- will be remapped to (-1, -1).
+            ngeoms = self.scn.ngeom
+            segid2output = np.full(
+                (ngeoms + 1, 2), fill_value=-1, dtype=np.int32
+            )  # Seg id cannot be > ngeom + 1.
+            visible_geoms = [g for g in self.scn.geoms[:ngeoms] if g.segid != -1]
+            visible_segids = np.array([g.segid + 1 for g in visible_geoms], np.int32)
+            visible_objid = np.array([g.objid for g in visible_geoms], np.int32)
+            visible_objtype = np.array([g.objtype for g in visible_geoms], np.int32)
+            segid2output[visible_segids, 0] = visible_objid
+            segid2output[visible_segids, 1] = visible_objtype
+
+            return {'rgb': None, 'depth': None, 'seg': np.flipud(segid2output[segimage])}
+
         if depth:
             rgb_img = np.zeros((shape[1], shape[0], 3), dtype=np.uint8)
             depth_img = np.zeros((shape[1], shape[0], 1), dtype=np.float32)
             mujoco.mjr_readPixels(rgb_img, depth_img, self.viewport, self.ctx)
-            return (np.flipud(rgb_img), np.flipud(depth_img))
+
+            # Get the distances to the near and far clipping planes.
+            extent = self.model.stat.extent
+            near = self.model.vis.map.znear * extent
+            far = self.model.vis.map.zfar * extent
+
+            # Convert from [0 1] to depth in units of length, see links below:
+            # http://stackoverflow.com/a/6657284/1461210
+            # https://www.khronos.org/opengl/wiki/Depth_Buffer_Precision
+            out = near / (1 - depth_img * (1 - near / far))
+
+            return {'rgb': np.flipud(rgb_img), 'depth': np.flipud(depth_img), 'seg': None}
         else:
             img = np.zeros((shape[1], shape[0], 3), dtype=np.uint8)
             mujoco.mjr_readPixels(img, None, self.viewport, self.ctx)
-            return np.flipud(img)
+            
+            return {'rgb': np.flipud(img), 'depth': None, 'seg': None}
 
 
     def render(self):
