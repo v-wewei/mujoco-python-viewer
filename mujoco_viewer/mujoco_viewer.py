@@ -342,7 +342,7 @@ class MujocoViewer(Callbacks):
             # https://www.khronos.org/opengl/wiki/Depth_Buffer_Precision
             out = near / (1 - depth_img * (1 - near / far))
 
-            return {'rgb': np.flipud(rgb_img), 'depth': np.flipud(depth_img), 'seg': None}
+            return {'rgb': np.flipud(rgb_img), 'depth': np.flipud(out), 'seg': None}
         else:
             img = np.zeros((shape[1], shape[0], 3), dtype=np.uint8)
             mujoco.mjr_readPixels(img, None, self.viewport, self.ctx)
